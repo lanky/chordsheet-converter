@@ -3,7 +3,7 @@ import re
 # import os
 import sys
 from optparse import OptionParser
-
+import logging
 # chords are
 # A-G #|b min|maj possibly followed by 5/6/7/9/13
 # A-G #|b sus followed by 2 or 4
@@ -11,8 +11,14 @@ from optparse import OptionParser
 # A-G #|b <nothing>
 
     
-CRD = re.compile(r"\b((?:[A-G])(?:#|b)?(?:m|maj|sus)?(?:[0-9]+)?(?:/[A-G](?:#|b)?)?)\b")
+CRD = re.compile(r"""\b(
+                     (?:[A-G])(?:\#|b)?
+                     (?:m|maj|sus|add)?
+                     (?:[0-9]+)?
+                     (?:/[A-G](?:\#|b)?)?
+                     )\b""", re.X)
 
+# ---------------------------------------------------------------------------- #
 
 def parse_args(argv):
     """
@@ -35,6 +41,42 @@ Produce a chordsheet in UW format
         sys.exit(1)
 
     return opts, args[0]
+
+# ---------------------------------------------------------------------------- #
+
+def get_logger(logname, loglevel=20):
+    """
+    logs errors and info
+    """
+    logging.basicConfig(level=loglevel, format="%(levelname)-8s %(message)s")
+    mylogger = logging.getLogger(logname)
+
+    return mylogger
+
+
+def format_chords(chordline, logger, chordpatt="(%s)"):
+    """
+    Processor for a line that already contains chords (i.e. the next line doesn't
+    have lyrics on it. Does not preserve spacing
+    
+    Args:
+        chordline(str): line of whitespace-separated chords 
+
+    Kwargs:
+        chordpatt(str): string replacement pattern for inserting chords.
+                        defaults to (%s) - chord with () around it
+    """
+    # thoughts: should we attempt to preserve spacing?
+    def wrapchord(crd):
+        """
+        evaluates chordpatt against an re.match object
+        """
+        logger.debug("wrapping chord %s" % crd.groups()[0])
+        return chordpatt % crd.groups()[0]
+
+    return CRD.sub(wrapchord, chordline)
+
+# ---------------------------------------------------------------------------- #
 
 def insert_chords(chordline, lyricline, chordpatt="(%s)"):
     """
@@ -75,14 +117,18 @@ def insert_chords(chordline, lyricline, chordpatt="(%s)"):
 # could work with a while len(lines) loop?
 # and pop(0)
 
-def process_lines(chordlines, chordpattern="(%s)"):
+# ---------------------------------------------------------------------------- #
+
+def process_lines(chordlines, logger, chordpattern="(%s)"):
     """
     an attempt to preserve blank lines
     """
     output = []
+    allchords = set()
     chordrepl = chordpattern % r'\\1'
     while len(chordlines) > 0:
         # pull out the first line
+        # logger.debug("Have %d lines to process" % len(chordlines))
         curline = chordlines.pop(0)
         # preserve blank lines
         if curline.strip() == '':
@@ -90,35 +136,45 @@ def process_lines(chordlines, chordpattern="(%s)"):
             continue
         # is it a chord line?
         elif CRD.search(curline) is not None:
-            nextline = chordlines.pop(0)
-            # is the next line chords too?
-            if CRD.search(nextline) is not None:
-                crds = CRD.sub(chordrepl, curline)
-                output.append(crds)
-                # put the next line back on the pile
-                chordlines.insert(0, nextline)
-            else:
-                newline = insert_chords(curline, nextline, chordpatt=chordpattern)
-                output.append(newline)
+            # add all found chords to our list
+            allchords.update(set(CRD.findall(curline)))
+            # check the next line to see if that is also chords
+            # what if we're on the last line:
+            try:
+                nextline = chordlines.pop(0)
+                if CRD.search(nextline) is not None:
+                    crds = format_chords(curline, logger, chordpattern)
+                    output.append(crds)
+                    # put the next line back on the pile
+                    chordlines.insert(0, nextline)
+                else:
+                    newline = insert_chords(curline, nextline, chordpatt=chordpattern)
+                    output.append(newline)
+                    continue
+            except IndexError:
+                output.append(curline)
                 continue
+            # is the next line chords too?
         else:
             output.append(curline)
             continue
-    return output
+    return output, allchords
 
-
-
+# ---------------------------------------------------------------------------- #
 
 def main():
     opts, chordsheet = parse_args(sys.argv[1:])
     try:
+        logger = get_logger("chordprocessor", logging.DEBUG)
+
         data = open(chordsheet).read().splitlines()
         # let's record which lines contain chords and see if 
         # we can insert them appropriately on the following lines
 
-        output = process_lines(data, chordpattern=opts.chord_marker)
+        output, chordlist = process_lines(data, logger, chordpattern=opts.chord_marker)
 
         print '\n'.join(output)
+        print "Chords Used:", ', '.join(sorted(list(chordlist)))
 
     except (IOError, OSError), Err:
         print "cannot open %s (%s)" % (sys.argv[1], Err.strerror)
